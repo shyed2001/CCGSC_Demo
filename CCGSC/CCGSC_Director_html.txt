@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Director Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* The `body` selector targets the main body of the HTML document. */
+        body {
+            /* Sets the default font for the entire page to 'Inter', with a fallback to a generic sans-serif font if Inter is not available. */
+            font-family: 'Inter', sans-serif;
+            /* Sets a light gray background color for the page, which is easier on the eyes than pure white. */
+            background-color: #f0f2f5;
+            /* Sets the default text color for the page. */
+            color: #333;
+        }
+        /* The `.container` class selector defines styles for elements that will act as content containers. */
+        .container {
+            /* Sets the background color of the containers to white, making them stand out against the gray page background. */
+            background-color: #ffffff;
+            /* Applies rounded corners to the container elements, giving them a softer, more modern look. */
+            border-radius: 12px;
+            /* Adds a subtle shadow effect, which gives the containers a sense of depth and makes them appear to "float" above the background. */
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            /* Adds space inside the container, pushing the content away from the edges. */
+            padding: 24px;
+            /* Adds space outside the container on the top and bottom. `auto` for left and right centers the container horizontally. */
+            margin: 20px auto;
+            /* Sets a maximum width for the container. On larger screens, it won't stretch indefinitely, improving readability. */
+            max-width: 1200px;
+        }
+        /* The `.btn` class selector defines base styles for all button elements. */
+        .btn {
+            /* Sets the internal padding of the buttons. */
+            padding: 8px 16px;
+            /* Applies rounded corners to the buttons. */
+            border-radius: 8px;
+            /* Makes the button text bold. */
+            font-weight: 600;
+            /* Changes the mouse cursor to a pointer (a hand) when hovering over the button, indicating it's clickable. */
+            cursor: pointer;
+            /* Specifies that any changes to all properties (like transform or background-color) should be animated over 0.2 seconds with an ease-out timing function. */
+            transition: all 0.2s ease;
+            /* Prevents the user from selecting the text inside the button. */
+            user-select: none;
+        }
+        /* This pseudo-class selector targets a button when it's being hovered over BUT is not disabled. */
+        .btn:hover:not(:disabled) {
+            /* Moves the button up by 1 pixel, creating a subtle "lift" effect on hover. */
+            transform: translateY(-1px);
+        }
+        /* Modifier classes for button colors. These are combined with the base `.btn` class. */
+        .btn-primary { background-color: #3498db; color: white; } /* Blue button */
+        .btn-secondary { background-color: #2ecc71; color: white; } /* Green button */
+        .btn-warning { background-color: #f39c12; color: white; } /* Orange button */
+        .btn-danger { background-color: #e74c3c; color: white; } /* Red button */
+
+        /* This pseudo-class selector targets any button that has the `disabled` attribute. */
+        .btn:disabled {
+            /* Sets a gray background color to visually indicate that the button is inactive. */
+            background-color: #bdc3c7;
+            /* Changes the cursor to a "not-allowed" symbol (a circle with a slash). */
+            cursor: not-allowed;
+        }
+        /* Styles the container for the progress bar. */
+        .progress-bar-container {
+            /* A light gray background for the "track" of the progress bar. */
+            background-color: #ecf0f1;
+            /* Rounded corners to match other elements. */
+            border-radius: 8px;
+            /* A small amount of padding so the inner bar doesn't touch the edges. */
+            padding: 4px;
+            /* Hides any part of the inner bar that might overflow due to animations or rounding issues. */
+            overflow: hidden;
+        }
+        /* Styles the actual colored fill of the progress bar. */
+        .progress-bar-fill {
+            /* A pleasant green color to indicate progress. */
+            background-color: #27ae60;
+            /* The height of the progress bar. */
+            height: 28px;
+            /* Rounded corners, slightly less than the container, to look good inside it. */
+            border-radius: 6px;
+            /* Centers the text (the percentage) horizontally. */
+            text-align: center;
+            /* White text for good contrast against the green background. */
+            color: white;
+            /* Bold text. */
+            font-weight: bold;
+            /* Vertically centers the text by making the line height equal to the element's height. */
+            line-height: 28px;
+            /* Animates any change to the `width` property over 0.4 seconds, creating a smooth progress animation. */
+            transition: width 0.4s ease-out;
+        }
+        /* Base styles for the table. */
+        table {
+            /* Makes the table take up the full width of its container. */
+            width: 100%;
+            /* Collapses the borders between cells into a single border. */
+            border-collapse: collapse;
+        }
+        /* Styles for both table header (`th`) and data (`td`) cells. */
+        th, td {
+            /* Adds a border only to the bottom of each cell, creating horizontal dividers. */
+            border-bottom: 1px solid #ddd;
+            /* Adds padding inside each cell. */
+            padding: 12px 8px;
+            /* Aligns text to the left within the cells. */
+            text-align: left;
+            /* Sets the font size for table content. */
+            font-size: 0.9rem;
+        }
+        /* Specific styles for table header (`th`) cells. */
+        th {
+            /* A very light gray background to distinguish the header row. */
+            background-color: #f9fafb;
+            /* Bolder font weight for headers. */
+            font-weight: 600;
+        }
+        /* This pseudo-class selector targets every even-numbered table row (`<tr>`). */
+        tr:nth-child(even) {
+            /* Applies a slightly different background color to even rows, creating a "zebra-striping" effect that improves readability. */
+            background-color: #f9f9f9;
+        }
+    </style>
+
+    <style>
+        /* A `@media` query applies the CSS rules inside it only when the specified condition is met. Here, it's for screens with a maximum width of 768px (common for tablets and phones). */
+        @media screen and (max-width: 768px) {
+            /* Hides the traditional table header (`<thead>`) on small screens because we will create labels for each data point instead. */
+            table thead {
+                display: none;
+            }
+            /* Each table row (`<tr>`) is changed from a row to a block-level element, so they stack vertically like cards. */
+            table tr {
+                display: block;
+                /* Adds a border around each "card". */
+                border: 1px solid #ddd;
+                /* Adds space between each card. */
+                margin-bottom: 1rem;
+                /* Rounds the corners of the card. */
+                border-radius: 8px;
+                /* Adds padding inside the card. */
+                padding: 1rem;
+            }
+            /* Each table data cell (`<td>`) is transformed to arrange its content differently. */
+            table td {
+                /* Using `flex` allows us to easily align the label and the data value. */
+                display: flex;
+                /* This pushes the label to the left and the data value to the right, creating a two-column layout within the cell. */
+                justify-content: space-between;
+                /* Adjusts padding for the new layout. */
+                padding: 0.5rem 0;
+                /* Adds a light line separating each data point within the card. */
+                border-bottom: 1px solid #eee;
+                /* Aligns the actual data text (the value) to the right. */
+                text-align: right;
+            }
+            /* Removes the bottom border from the very last data point in each card for a cleaner look. */
+            table td:last-child {
+                border-bottom: none;
+            }
+            /* The `::before` pseudo-element is a powerful trick used here to create the data labels. It inserts content *before* the content of the `<td>`. */
+            table td::before {
+                /* `content: attr(data-label)` is the core of this technique. It takes the value of the `data-label` attribute from the `<td>` tag and displays it as content. This is how we get our labels back after hiding the `<thead>`. */
+                content: attr(data-label);
+                /* Makes the label text bold. */
+                font-weight: 600;
+                /* Aligns the label text to the left. */
+                text-align: left;
+                /* Adds some space between the label and the value. */
+                padding-right: 1rem;
+            }
+        }
+    </style>
+</head>
+<body class="p-4">
+    <h1 class="text-3xl font-bold text-center text-gray-800 my-4">Distributed Computation Control Panel</h1>
+
+    <div class="container">
+        <h2 class="text-xl font-bold mb-4 text-gray-700">Dashboard & Controls</h2>
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+            <button id="start-btn" class="btn btn-primary" disabled>Connecting...</button>
+            <button id="pause-resume-btn" class="btn btn-warning" disabled>Pause</button>
+            <button id="restart-btn" class="btn btn-danger">Restart Server</button>
+            <button id="clearStateBtn" class="btn btn-warning">Clear Previous Data</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-gray-600">
+            <div><strong>Status:</strong> <span id="computation-status" class="font-semibold">Idle</span></div>
+            <div><strong>Upper Limit (N):</strong> <span id="n-value" class="font-semibold">N/A</span></div>
+            <div><strong>Connected Workers:</strong> <span id="worker-count" class="font-semibold">0</span></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2 class="text-xl font-bold mb-4 text-gray-700">Overall Progress</h2>
+        <div class="progress-bar-container">
+            <div id="overall-progress-bar" class="progress-bar-fill" style="width: 0%;">0%</div>
+        </div>
+        <div class="flex justify-between mt-2 text-gray-700 font-medium">
+            <span>Tasks: <span id="tasks-completed">0 / 0</span></span>
+            <span>Primes Found: <span id="running-total">0</span></span>
+        </div>
+        <div class="mt-6 text-center">
+            <a href="./progress_details.html" target="_blank" class="text-blue-600 hover:underline font-bold">View Detailed Task Grid &raquo;</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2 class="text-xl font-bold mb-4 text-gray-700">Worker Management</h2>
+        <div class="overflow-x-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>IP</th>
+                        <th>Task</th>
+                        <th>Done</th>
+                        <th>Primes</th>
+                        <th>CPU</th>
+                        <th>Browser/OS</th>
+                        <th>Memory (JS Heap)</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="workers-table-body"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="text-center my-4">
+        <a href="./LogWorkerTaskProgressData.html" target="_blank" class="text-blue-600 hover:underline font-bold">View Live Logs &raquo;</a>
+    </div>
+
+    <script>
+        // An event listener that waits for the entire HTML document to be fully loaded and parsed before running the enclosed JavaScript code. This prevents errors from trying to access DOM elements that haven't been created yet.
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DATABASE AND COMMUNICATION SETUP ---
+            // A constant holding the name for the IndexedDB database. Using a constant prevents typos.
+            const DB_NAME = 'ComputationDB';
+            // A constant for the database version. If you change the database structure (e.g., add a new table), you must increment this version number.
+            const DB_VERSION = 1;
+            // Creates a BroadcastChannel. This allows different browser tabs/windows from the same origin to send messages to each other. It's used to keep all dashboard-related tabs in sync.
+            const channel = new BroadcastChannel('computation_channel');
+            // A variable to hold the database connection object once it's established. It's declared with `let` because it will be assigned a value later.
+            let db;
+
+            // --- UI ELEMENT REFERENCES ---
+            // An object to store references to all the important DOM elements we'll need to interact with. This is more organized and slightly more performant than repeatedly calling `document.getElementById`.
+            const elements = {
+                startBtn: document.getElementById('start-btn'),
+                pauseResumeBtn: document.getElementById('pause-resume-btn'),
+                restartBtn: document.getElementById('restart-btn'),
+                clearStateBtn: document.getElementById('clearStateBtn'),
+                progressBar: document.getElementById('overall-progress-bar'),
+                tasksCompletedSpan: document.getElementById('tasks-completed'),
+                runningTotalSpan: document.getElementById('running-total'),
+                workerCountSpan: document.getElementById('worker-count'),
+                workersTableBody: document.getElementById('workers-table-body'),
+                computationStatusSpan: document.getElementById('computation-status'),
+                nValueSpan: document.getElementById('n-value'),
+            };
+
+            // --- GLOBAL STATE VARIABLES ---
+            // A variable to store the total number of tasks for the current computation. Initialized to 0.
+            let TOTAL_TASKS = 0;
+            // A boolean flag to track whether the computation is currently running or paused.
+            let IS_RUNNING = false;
+
+            // --- FUNCTION DEFINITIONS ---
+
+            /**
+             * Initializes the IndexedDB database. This function sets up the database and its tables (object stores).
+             * Control Flow: This is one of the first functions called. If the DB connection is successful, it then calls loadStateFromDB() and connectWebSocket().
+             */
+            function initDB() {
+                // This command starts the process of opening a connection to the database. It's an asynchronous operation.
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                
+                // This event handler is triggered ONLY when the DB version changes or the database is created for the first time. This is where you define the database schema.
+                request.onupgradeneeded = e => {
+                    // Gets the database instance from the event object.
+                    const dbInstance = e.target.result;
+                    // Checks if an object store (like a table in SQL) named 'state' already exists.
+                    if (!dbInstance.objectStoreNames.contains('state')) {
+                        // If not, it creates the 'state' object store. The `keyPath` option specifies that each object stored here will have a property named 'key' that will serve as its unique identifier.
+                        dbInstance.createObjectStore('state', { keyPath: 'key' });
+                    }
+                    // Does the same check for a 'logs' object store.
+                    if (!dbInstance.objectStoreNames.contains('logs')) {
+                        // Creates the 'logs' object store. `autoIncrement: true` means that IndexedDB will automatically generate a unique, incrementing number as the key for each new log entry.
+                        dbInstance.createObjectStore('logs', { autoIncrement: true });
+                    }
+                };
+
+                // This event handler is triggered if an error occurs during the database opening process.
+                request.onerror = e => console.error('DB Error:', e.target.errorCode);
+                
+                // This event handler is triggered when the database connection is successfully established.
+                request.onsuccess = e => {
+                    // Assigns the successful database connection object to our global `db` variable for later use.
+                    db = e.target.result;
+                    console.log('Database connection successful.');
+                    // Now that the DB is ready, we load any previously saved state.
+                    loadStateFromDB();
+                    // And we establish the WebSocket connection to the server.
+                    connectWebSocket();
+                };
+            }
+
+            /**
+             * Establishes and manages the WebSocket connection to the server.
+             * This function handles all real-time communication: sending commands and receiving state updates.
+             */
+            function connectWebSocket() {
+                // Creates a new WebSocket object, attempting to connect to the specified server URL. `wss://` is the secure version of WebSocket (`ws://`).
+                const socket = new WebSocket('wss://ccgsc-director.digitalbd.org/ws');
+                // Updates the UI to show the user we are trying to connect.
+                elements.startBtn.textContent = 'Connecting...';
+                
+                // This event handler is called when the WebSocket connection is successfully opened.
+                socket.onopen = () => {
+                    // Enables the start button, as we can now send commands.
+                    elements.startBtn.disabled = false;
+                    // Changes the button text to be more descriptive.
+                    elements.startBtn.textContent = 'Start New Computation';
+                    // Sends a message to the server to identify this client as a director. The message is a JSON string.
+                    socket.send(JSON.stringify({ type: 'registerDirector' }));
+                };
+
+                // This is the most important event handler. It's called every time a message is received from the server.
+                socket.onmessage = async (event) => {
+                    // The received data is a string, so we parse it into a JavaScript object.
+                    const data = JSON.parse(event.data);
+                    // We asynchronously update our local IndexedDB with the new data from the server.
+                    await updateDB(data);
+                    // We post a message on the BroadcastChannel. This tells any other open tabs that there's new data, so they can also update themselves.
+                    channel.postMessage({ type: 'update' });
+                    // We immediately load the new state from the DB to update the UI of this current tab.
+                    loadStateFromDB();
+                };
+
+                // This event handler is called when the WebSocket connection is closed (either intentionally or due to an error/network loss).
+                socket.onclose = () => {
+                    // Disables the start button and updates its text to inform the user that they are disconnected.
+                    elements.startBtn.disabled = true;
+                    elements.startBtn.textContent = 'Disconnected';
+                };
+                
+                // --- COMMAND BUTTON EVENT LISTENERS ---
+                // These `onclick` handlers send specific commands to the server via the WebSocket when the buttons are clicked.
+                
+                // When the start button is clicked, send a 'startComputation' message.
+                elements.startBtn.onclick = () => socket.send(JSON.stringify({ type: 'startComputation' }));
+                
+                // For the pause/resume button, it checks the global `IS_RUNNING` flag. If true, it sends 'pauseComputation'; otherwise, it sends 'resumeComputation'.
+                elements.pauseResumeBtn.onclick = () => socket.send(JSON.stringify({ type: IS_RUNNING ? 'pauseComputation' : 'resumeComputation' }));
+                
+                // Shows a confirmation dialog before sending the 'restartServer' command. `confirm()` returns true if the user clicks "OK".
+                elements.restartBtn.onclick = () => confirm('Restart server?') && socket.send(JSON.stringify({ type: 'restartServer' }));
+
+                // Shows a confirmation dialog before sending the 'clearState' command.
+                elements.clearStateBtn.onclick = () => confirm('Clear all state?') && socket.send(JSON.stringify({ type: 'clearState' }));
+            }
+
+            /**
+             * Updates the IndexedDB with new data received from the WebSocket.
+             * Data Flow: Receives a data object from the WebSocket message handler.
+             * @param {object} data - The parsed JSON data from the server.
+             * @returns {Promise} A promise that resolves when the database transaction is complete.
+             */
+            async function updateDB(data) {
+                // A guard clause: if the database connection isn't ready yet, do nothing.
+                if (!db) return;
+                // Starts a new database transaction. It needs access to both 'state' and 'logs' stores, and it's a 'readwrite' transaction because we'll be modifying data.
+                const tx = db.transaction(['state', 'logs'], 'readwrite');
+                // Gets a reference to the 'state' object store from the transaction.
+                const stateStore = tx.objectStore('state');
+                // Gets a reference to the 'logs' object store.
+                const logStore = tx.objectStore('logs');
+
+                // The logic here depends on the `type` of message received from the server.
+                if (data.type === 'log') {
+                    // If it's a log message, simply add it to the 'logs' store.
+                    logStore.add(data.message);
+                } else if (data.type === 'fullState') {
+                    // If it's a 'fullState' message, it means the server sent the entire application state.
+                    // We add a `key` property to the object, as required by our object store's `keyPath`.
+                    data.key = 'currentState';
+                    // We use `put` to either insert or overwrite the 'currentState' object in the store.
+                    stateStore.put(data);
+                } else {
+                    // For all other message types (like 'progress', 'workerUpdate', etc.), we need to perform a "read-modify-write" operation.
+                    // First, we request the existing state from the database. This is an asynchronous operation.
+                    const req = stateStore.get('currentState');
+                    // This event handler is called when the `get` request is successful.
+                    req.onsuccess = () => {
+                        // The retrieved state, or a default empty state object if nothing was found.
+                        const currentState = req.result || { results: [], workers: [] };
+                        
+                        // DSA: The `currentState.results` is an array where the index corresponds to the taskId.
+                        if (data.type === 'progress') {
+                            // We update the specific task's result with the new prime count.
+                            currentState.results[data.taskId] = data.count;
+                        }
+
+                        // DSA: The `currentState.workers` is an array of [id, info] pairs. We use `findIndex` to locate the worker to update. This is an O(n) operation.
+                        if (data.type === 'workerUpdate') {
+                            const index = currentState.workers.findIndex(w => w[0] === data.workerId);
+                            if (index > -1) { // If the worker exists
+                                // Update its info.
+                                currentState.workers[index][1] = data.workerInfo;
+                            } else { // If it's a new worker
+                                // Add it to the array.
+                                currentState.workers.push([data.workerId, data.workerInfo]);
+                            }
+                        }
+                        if (data.type === 'workerRemoved') {
+                            // Use `filter` to create a new array that excludes the removed worker.
+                            currentState.workers = currentState.workers.filter(w => w[0] !== data.workerId);
+                        }
+                        if (data.type === 'computationStateChanged') {
+                            // Update the running status flag.
+                            currentState.isRunning = data.isRunning;
+                        }
+                        // After modifying the `currentState` object in memory, we write it back to the database.
+                        stateStore.put(currentState);
+                    };
+                }
+                // `tx.complete` is a promise that resolves when the transaction has successfully completed.
+                return tx.complete;
+            }
+
+            /**
+             * Loads the current state from IndexedDB and triggers a UI update.
+             * Control Flow: This is called after the DB is initialized and after any update from the WebSocket.
+             */
+            function loadStateFromDB() {
+                // Guard clause: if DB is not ready, do nothing.
+                if (!db) return;
+                // Starts a 'readonly' transaction since we are only reading data.
+                const tx = db.transaction('state', 'readonly');
+                const store = tx.objectStore('state');
+                // Requests the 'currentState' object.
+                const request = store.get('currentState');
+
+                // When the request is successful...
+                request.onsuccess = () => {
+                    // Get the result.
+                    const state = request.result;
+                    // If a state object was found...
+                    if (state) {
+                        // Update our global variables from the loaded state.
+                        TOTAL_TASKS = state.totalTasks;
+                        IS_RUNNING = state.isRunning;
+                        // Call the function to update the entire user interface with the new state.
+                        updateUI(state);
+                    }
+                };
+            }
+
+            /**
+             * Updates all dynamic parts of the HTML based on the provided state object.
+             * This function is the bridge between the application's data (state) and what the user sees.
+             * @param {object} state - The complete application state object loaded from the database.
+             */
+            function updateUI(state) {
+                // Calculate how many tasks have been completed by filtering the results array for non-null entries.
+                const completedCount = state.results?.filter(r => r !== null).length || 0;
+                // Calculate the completion percentage. The `toFixed(1)` limits it to one decimal place.
+                const percentage = TOTAL_TASKS > 0 ? ((completedCount / TOTAL_TASKS) * 100).toFixed(1) : 0;
+                
+                // --- Update a;; UI elements with new data ---
+                // Update the 'N' value display. `toLocaleString()` formats the number with commas.
+                elements.nValueSpan.textContent = state.nValue?.toLocaleString() || 'N/A';
+                // Update the progress bar's width and text content.
+                elements.progressBar.style.width = `${percentage}%`;
+                elements.progressBar.textContent = `${percentage}%`;
+                // Update the task completion text.
+                elements.tasksCompletedSpan.textContent = `${completedCount} / ${TOTAL_TASKS}`;
+                // Use `reduce` to sum up all the prime counts. `BigInt` is used because the total number of primes can exceed the standard JavaScript number limit.
+                elements.runningTotalSpan.textContent = state.results?.reduce((sum, count) => sum + BigInt(count || 0), 0n).toLocaleString() || '0';
+                
+                // Update the worker count display.
+                elements.workerCountSpan.textContent = state.workers?.length || 0;
+                // Clear the existing content of the worker table body before repopulating it.
+                elements.workersTableBody.innerHTML = '';
+                // Iterate over each worker in the state.
+                state.workers?.forEach(([id, info]) => {
+                    // Insert a new row (`<tr>`) at the end of the table.
+                    const row = elements.workersTableBody.insertRow();
+                    // Use a template literal to set the inner HTML of the row. This creates all the cells (`<td>`) for the worker.
+                    // CRITICAL FOR RESPONSIVE: Note the `data-label` attribute on each `<td>`. This attribute's value is used by the CSS `::before` pseudo-element to create labels on mobile view.
+                    row.innerHTML = `
+                        <td data-label="ID">${id}</td>
+                        <td data-label="Status">${info.status}</td>
+                        <td data-label="IP Address">${info.ipAddress}</td>
+                        <td data-label="Task">${info.currentTask ?? 'N/A'}</td>
+                        <td data-label="Done">${info.stats?.tasksCompleted || 0}</td>
+                        <td data-label="Primes">${BigInt(info.stats?.primesFound || 0).toLocaleString()}</td>
+                        <td data-label="CPU">${info.cpuCores}</td>
+                        <td data-label="Browser/OS">${info.browserInfo || 'Unknown'}</td>
+                        <td data-label="Memory">${info.memory?.usedJSHeapSize || 'N/A'}</td>
+                        <td data-label="Actions"><button onclick="window.terminateWorker('${id}')" class="btn btn-danger btn-sm p-1">X</button></td>
+                    `;
+                });
+
+                // Update the main computation status text based on the `IS_RUNNING` flag.
+                elements.computationStatusSpan.textContent = IS_RUNNING ? 'Running' : 'Paused';
+                // The start button should be disabled if the computation is currently running.
+                elements.startBtn.disabled = IS_RUNNING;
+                // The pause/resume button should be disabled if there are no tasks at all.
+                elements.pauseResumeBtn.disabled = TOTAL_TASKS === 0;
+                // The text of the pause/resume button should change based on the current state.
+                elements.pauseResumeBtn.textContent = IS_RUNNING ? 'Pause' : 'Resume';
+            }
+            
+            // This attaches a function to the global `window` object, making it accessible from `onclick` attributes in the HTML.
+            // NOTE: This is a placeholder. The actual termination logic must be sent over the WebSocket. The current implementation just logs to the console.
+            window.terminateWorker = (workerId) => console.log(`Request to terminate ${workerId} should be sent via WebSocket`);
+            
+            // --- INITIALIZATION ---
+            // This is the initial function call that kicks off the entire application logic when the page loads.
+            initDB();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,317 @@
+
+<%
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <title>CCGSC Distributed Prime Computation - Worker</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* What: A CSS rule targeting the <body> element. */
+        body {
+            font-family: 'Inter', sans-serif; /* Sets the default font for the entire page. */
+            background-color: #f0f2f5;        /* A light grey background color for a soft, modern look. */
+            color: #333;                      /* A dark grey for the default text color, which is easier on the eyes than pure black. */
+            display: flex;                    /* Enables Flexbox layout for the body. */
+            flex-direction: column;           /* Stacks child elements vertically. */
+            min-height: 100vh;                /* Ensures the body takes up at least the full height of the viewport. */
+            margin: 0;                        /* Removes default browser margins. */
+            padding: 20px;                    /* Adds some space around the content. */
+            box-sizing: border-box;           /* Ensures padding doesn't add to the total width/height of elements. */
+            align-items: center;              /* Horizontally centers the flex items (the containers). */
+        }
+        /* What: A CSS rule for elements with the class 'container'. */
+        .container {
+            background-color: #ffffff;        /* A white background to make content stand out. */
+            border-radius: 12px;              /* Rounded corners for a softer, modern card-like appearance. */
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* A subtle shadow to give the container depth. */
+            padding: 24px;                    /* Internal spacing within the container. */
+            margin-bottom: 20px;              /* Space between containers. */
+            width: 100%;                      /* Makes the container take the full width of its parent. */
+            max-width: 600px;                 /* Constrains the maximum width, making it more readable on large screens. */
+        }
+        /* What: Style for the main page header. */
+        .header {
+            font-size: 1.8rem;                /* Large font size for the main title. */
+            font-weight: 700;                 /* Bold font weight. */
+            color: #2c3e50;                   /* A specific dark blue-grey color for headings. */
+            margin-bottom: 20px;              /* Space below the header. */
+            text-align: center;               /* Centers the header text. */
+        }
+        /* What: Style for section titles within containers. */
+        .section-title {
+            font-size: 1.25rem;               /* Medium font size for section titles. */
+            font-weight: 600;                 /* Semi-bold font weight. */
+            color: #34495e;                   /* A slightly lighter blue-grey than the main header. */
+            margin-bottom: 12px;              /* Space below the title. */
+            border-bottom: 2px solid #ecf0f1; /* A light underline to visually separate the title from content. */
+            padding-bottom: 8px;              /* Space between the text and the underline. */
+        }
+        /* What: Style for the main status display box. */
+        .status-box {
+            background-color: #ecf0f1;        /* A very light grey background to differentiate it. */
+            padding: 12px;                    /* Internal spacing. */
+            border-radius: 8px;               /* Slightly rounded corners. */
+            font-weight: 600;                 /* Semi-bold text. */
+            text-align: center;               /* Center-aligns the status message. */
+            color: #2c3e50;                   /* Dark text color for contrast. */
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1 class="header">`Cloud Crowd Grid Super-Computing`</h1>
+    <h1>Join a global network of computers to solve complex problems and earn rewards</h1>
+    <h1>Distributed Prime Computation</h1>
+    <h1>Dear Valued Contributor you are a Web-Worker</h1>
+    <p> </p> <h1>Thank you for your contribution</h1>
+
+    <div class="container flex flex-col items-center mt-8">
+        <h2 class="section-title w-full text-center">Worker Status</h2>
+        <div id="worker-id-display" class="text-lg font-bold mt-2">Worker ID: <span id="my-worker-id">N/A</span></div>
+        <div id="status" class="status-box mt-4 w-full">Connecting to coordinator...</div>
+        <div class="mt-4 w-full text-center">
+            <p class="font-bold">Tasks Completed by me: <span id="my-tasks-completed">0</span></p>
+            <p class="font-bold">Primes Found by me: <span id="my-primes-found">0</span></p>
+        </div>
+    </div>
+
+    <script type="module">
+        // What: Imports a helper function from an external file.
+        // Why: 'getClientInfo' likely contains logic to gather browser/system details (like CPU cores), keeping the main script cleaner.
+        import { getClientInfo } from './stats.js';
+
+        // --- DOM Element References ---
+        // What: Getting references to the HTML elements we need to update.
+        // Why: Caching these references in constants at the start is more efficient than repeatedly searching the DOM with `getElementById()`.
+        const statusDiv = document.getElementById('status');
+        const myWorkerIdSpan = document.getElementById('my-worker-id');
+        const myTasksCompletedSpan = document.getElementById('my-tasks-completed');
+        const myPrimesFoundSpan = document.getElementById('my-primes-found');
+
+        // --- State Variables ---
+        // What: Declaring variables to hold the worker's state.
+        // Why: These variables track the session's progress and identity.
+        let myWorkerId = null;         // Will hold the unique ID for this worker session.
+        let myTasksCompleted = 0;      // A counter for completed tasks.
+        let myPrimesFound = 0n;        // A counter for primes found. The 'n' makes it a BigInt, necessary for handling potentially huge numbers.
+        let workerSocket;              // Will hold the WebSocket connection object.
+
+        // --- Configuration ---
+        // What: Defines the WebSocket server URL.
+        // Why: Centralizes the connection endpoint. The commented-out lines show different URLs used during development. The final 'wss://' URL is for the secure production server.
+        const COORDINATOR_WS_URL_WORKER = 'wss://ccgsc-demo.digitalbd.org/ws'; // Use this for production
+
+        // What: Creates a new Web Worker.
+        // How: The `Worker` constructor takes the path to the worker script. `{ type: 'module' }` allows the worker script itself to use modern JavaScript modules.
+        // Why: This is the key to non-blocking computation. The heavy prime-counting logic runs in `computation_worker.js` on a separate background thread, so it doesn't freeze the user interface.
+        const computationWorker = new Worker('./computation_worker.js', { type: 'module' });
+
+        // --- Memory Reporting Logic ---
+        // What: A function to periodically report the browser tab's memory usage to the server.
+        function reportMemoryUsage() {
+            // What: A check to see if the browser supports the `performance.memory` API and if the WebSocket is connected.
+            // Why: Ensures we only try to send data if it's available and the connection is open, preventing errors.
+            if (performance.memory && workerSocket?.readyState === WebSocket.OPEN) {
+                // What: Constructs a data object with the memory information.
+                const memoryInfo = {
+                    type: 'memoryUpdate',
+                    workerId: myWorkerId,
+                    memory: {
+                        // What: Converts the heap size from bytes to megabytes and formats it as a string.
+                        usedJSHeapSize: (performance.memory.usedJSHeapSize / 1048576).toFixed(2) + ' MB',
+                    }
+                };
+                // What: Sends the memory data to the server.
+                workerSocket.send(JSON.stringify(memoryInfo));
+            }
+        }
+        
+        // What: Schedules the `reportMemoryUsage` function to run repeatedly.
+        // How: `setInterval` calls the function every 15000 milliseconds (15 seconds).
+        // Why: Provides the server with periodic health/performance metrics from the worker.
+        setInterval(reportMemoryUsage, 15000);
+        
+        // --- Worker ID Generation ---
+        // What: A function to create a reasonably unique ID for the worker.
+        // How: It combines a prefix, the current timestamp (converted to base-36), and a random number (also base-36) to create an ID like 'worker-kxq4wrc12zabc'.
+        // Why: This allows the server to track this specific worker session without requiring user login.
+        function generateWorkerId() {
+            return 'worker-' + Date.now().toString(36) + Math.random().toString(36).substring(2);
+        }
+
+        // --- Communication Handler for Computation Worker ---
+        // What: This is an event listener for messages coming FROM the background `computationWorker`.
+        // Control Flow: This function acts as a router, directing messages from the computation thread to the correct actions on the main thread (like updating the UI or forwarding to the server).
+        computationWorker.onmessage = (event) => {
+            const data = event.data; // The data object sent from the computation worker.
+            // What: A `switch` statement to handle different message types.
+            // Why: Provides a clean way to manage the various kinds of communication from the computation worker.
+            switch (data.type) {
+                case 'status': // A status update message.
+                    statusDiv.textContent = data.message;
+                    break;
+                case 'stillWorking': // A heartbeat message to say the worker is still busy.
+                    workerSocket.send(JSON.stringify({ type: 'stillWorking', workerId: myWorkerId, taskId: data.taskId, memory: data.memory }));
+                    break;
+                case 'result': // The computation result for a completed task.
+                    const primeCountBigInt = BigInt(data.count); // Convert the result string to a BigInt.
+                    myTasksCompleted++; // Increment the completed task counter.
+                    myPrimesFound += primeCountBigInt; // Add the found primes to the total.
+                    myTasksCompletedSpan.textContent = myTasksCompleted; // Update the UI.
+                    myPrimesFoundSpan.textContent = myPrimesFound.toLocaleString(); // Update the UI, formatted with commas.
+                    statusDiv.textContent = '✅ Task complete. Awaiting next task.'; // Update the status message.
+                    // Forward the result to the coordinator server.
+                    workerSocket.send(JSON.stringify({ type: 'result', workerId: myWorkerId, taskId: data.taskId, count: data.count }));
+                    break;
+                case 'error': // An error occurred during computation.
+                    statusDiv.textContent = `❌ Error on task #${data.taskId}. Reporting to server.`;
+                    // Forward the error message to the coordinator server.
+                    workerSocket.send(JSON.stringify({ type: 'error', workerId: myWorkerId, taskId: data.taskId, message: data.message }));
+                    break;
+            }
+        };
+        
+        // --- Main WebSocket Connection Logic ---
+        // What: A function that encapsulates the entire process of connecting to the coordinator server.
+        function connectWorkerSocket() {
+            // What: Generates a worker ID if one doesn't already exist for this session.
+            if (myWorkerId === null) {
+                myWorkerId = generateWorkerId();
+                myWorkerIdSpan.textContent = myWorkerId; // Display the new ID in the UI.
+            }
+
+            statusDiv.textContent = 'Connecting to coordinator...'; // Initial status message.
+            workerSocket = new WebSocket(COORDINATOR_WS_URL_WORKER); // Create the WebSocket instance.
+
+            // --- WebSocket Event Handlers ---
+            // What: An event handler that runs when the connection is successfully opened.
+            workerSocket.onopen = () => {
+                statusDiv.textContent = '✅ Connected. Awaiting tasks.';
+                const clientInfo = getClientInfo(); // Get browser/CPU stats.
+                // What: Sends a registration message to the server.
+                // Data Flow: This is the first message the client sends, identifying itself and providing its capabilities.
+                workerSocket.send(JSON.stringify({ 
+                    type: 'registerWorker', 
+                    workerId: myWorkerId, 
+                    browserInfo: clientInfo.browserInfo,
+                    cpuCores: clientInfo.cpuCores
+                }));
+            };
+
+            // What: An event handler that runs every time a message is received from the server.
+            workerSocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                // What: Checks if the message is a new task.
+                // Control Flow: If it is a task, it's forwarded to the background computation worker.
+                if (data.type === 'task') {
+                    computationWorker.postMessage({ task: data.task });
+                }
+            };
+
+            // What: An event handler that runs when the connection is closed.
+            workerSocket.onclose = () => {
+                statusDiv.textContent = '❌ Disconnected. Reconnecting in 5 seconds...';
+                // What: Schedules a reconnection attempt.
+                // How: `setTimeout` waits 5 seconds and then calls `connectWorkerSocket` again, creating a retry loop.
+                setTimeout(connectWorkerSocket, 5000);
+            };
+
+            // What: An event handler for any connection errors.
+            workerSocket.onerror = (error) => {
+                console.error('Worker WebSocket Error:', error);
+                workerSocket.close(); // Triggers the `onclose` event handler for a clean reconnection attempt.
+            };
+        }
+
+        // What: The initial call to start the connection process when the page loads.
+        connectWorkerSocket();
+    </script>
+    
+    <section class="container mt-8" aria-labelledby="welcome-title">
+        <h2 id="welcome-title" class="section-title w-full text-center">Welcome to CCGSC Worker</h2>
+        <p class="mt-2">Join the Cloud Crowd Grid Super-Computing (CCGSC) platform and contribute your device’s idle processing power to large-scale computations—right from your browser. No installs. No fuss.</p>
+        <p class="mt-2">Your browser securely receives tasks from the coordinator, processes them in the background using Web Workers and WebAssembly, and returns the results. You’ll see your live stats in the <a href="#status" class="text-blue-600 font-semibold hover:underline">Worker Status</a> panel.</p>
+        <div class="mt-4 flex justify-center">
+            <a href="#status" class="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 focus:outline-none focus:ring">Start Contributing (Scroll to Status)</a>
+        </div>
+    </section>
+
+    <section class="container" aria-labelledby="what-title">
+        <h3 id="what-title" class="section-title w-full text-center">What is CCGSC?</h3>
+        <p>CCGSC is a distributed computing platform that harnesses unused CPU/GPU cycles from desktops, laptops, and mobile devices worldwide. Together, devices form a global supercomputer for scientific, engineering, and data-intensive workloads.</p>
+    </section>
+
+    <section class="container" aria-labelledby="how-title">
+        <h3 id="how-title" class="section-title w-full text-center">How It Works</h3>
+        <ol class="list-decimal pl-6 space-y-2">
+            <li><span class="font-semibold">Join:</span> Open this worker page to connect to the coordinator.</li>
+            <li><span class="font-semibold">Receive a Task:</span> Your browser gets a small slice of a larger job (e.g., prime search, matrix multiplications for AI/ML, nested-loop kernels).</li>
+            <li><span class="font-semibold">Process:</span> Tasks run in the background via Web Workers and WebAssembly—no software installation required.</li>
+            <li><span class="font-semibold">Return & Earn:</span> Results are sent back and your contribution is recorded toward rewards/leaderboards.</li>
+        </ol>
+    </section>
+
+    <section class="container" aria-labelledby="focus-title">
+        <h3 id="focus-title" class="section-title w-full text-center">Current Focus: Mathematical Tests • Massively Parallel Task Testing • AI/ML (NN/CNN/ANN/GPT) Simulations • The Prime Number Challenge</h3>
+        <p class="mt-2">Our current initiative involves calculating prime numbers up to <span class="font-semibold">400&nbsp;billion</span>. By joining, you help tackle this massive mathematical challenge—one task at a time. You can monitor the grid’s overall progress below and see your individual contributions live in the <a href="#status" class="text-blue-600 font-semibold hover:underline">Worker Status</a> panel.</p>
+        
+        <div class="mt-4">
+            <div class="flex items-baseline justify-between">
+                <span class="font-semibold">Overall Project Progress</span>
+                <span id="overall-progress-text" class="text-sm tabular-nums">0.00%</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-3 mt-2" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Overall project progress">
+                <div id="overall-progress-bar" class="h-3 rounded-full bg-blue-600" style="width: 0%"></div>
+            </div>
+            <p class="mt-2 text-sm text-gray-600">Target limit: <span class="font-mono">400,000,000,000</span>. Progress is aggregated from all connected workers.</p>
+        </div>
+        
+        <div class="mt-4">
+            <div class="flex items-baseline justify-between">
+                <span class="font-semibold">Pool Throughput (Tasks/min)</span>
+                <span id="pool-throughput-text" class="text-sm tabular-nums">—</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-3 mt-2" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Pool throughput">
+                <div id="pool-throughput-bar" class="h-3 rounded-full bg-green-600" style="width: 0%"></div>
+            </div>
+            <p class="mt-2 text-sm text-gray-600">Live throughput reflects coordinator updates. Your personal stats are shown above in <span class="font-semibold">Worker Status</span>.</p>
+        </div>
+        
+        <div class="mt-4 flex flex-wrap gap-3">
+            <a href="/developers.html" class="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 focus:outline-none focus:ring">Join the Developerr’s Dashboard</a>
+            <a href="#status" class="px-4 py-2 rounded-lg bg-gray-100 text-gray-900 font-semibold hover:bg-gray-200 focus:outline-none focus:ring">Jump to My Live Stats</a>
+        </div>
+    </section>
+
+    </body>
+<footer class="container mt-8 border-t border-gray-200 pt-4" role="contentinfo">
+    <nav aria-label="Footer">
+        <ul class="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+            <li><a href="vision.html" class="text-blue-600 hover:underline">Project Vision</a></li>
+            <li><a href="security.html" class="text-blue-600 hover:underline">How We Ensure Security</a></li>
+            </ul>
+    </nav>
+    <p class="mt-3 text-xs text-gray-500">
+        © <span id="footer-year"></span> CCGSC. All rights reserved.
+    </p>
+</footer>
+
+<script>
+    (function(){ try { 
+        var y = new Date().getFullYear();
+        var el = document.getElementById('footer-year'); 
+        if (el) el.textContent = y; 
+    } catch(e){} })();
+</script>
+
+</html>
+%>

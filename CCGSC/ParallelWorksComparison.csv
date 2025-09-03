@@ -1,0 +1,8 @@
+Feature,Ultra Super Massive Embarrassingly Parallel,Ultra High Super Massive Embarrassingly Parallel,Ultra High Super Massive Parallel,Ultra High Super Massive Concurrent-Parallel,Ultra High Super Massive MultiThreaded-Concurrent-Parallel
+Dependencies,None/Minimal,None/Minimal,Some (structured, predictable),Complex (I/O, events, shared state),Extremely Complex (multi-layered dependencies)
+Communication,Very Low (initial/final),Very Low (initial/final),Moderate (periodic, structured),High (asynchronous, event-driven),Very High (fine-grained, asynchronous, distributed)
+Primary Goal,Maximize throughput, simplify scaling,Maximize throughput, simplify scaling,Maximize throughput for dependent work,Maximize throughput & responsiveness, manage dynamics,Maximize absolute performance & resource utilization
+Complexity,Low (relative to other parallel forms),Low (relative to other parallel forms),Medium,High,Extremely High
+Scalability,Near-linear,Near-linear,Good (until communication bottlenecks),Very Good (managing blocking operations),Optimal (all layers of parallelism exploited)
+Infrastructure,Commodity clusters, cloud instances,Larger clusters/more advanced (e.g., GPU farms),HPC clusters, specialized interconnects,Distributed systems, cloud, event-driven platforms,Exascale supercomputers, custom hardware, global networks
+Example Use,Monte Carlo, Hyperparameter Tuning,Same as above,Large CFD, Distributed NN Training,High-Frequency Trading, Global E-commerce,Exascale simulations, Hyperscale AI/Cloud Infrastructure

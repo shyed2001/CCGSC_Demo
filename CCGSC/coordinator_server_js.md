@@ -1,0 +1,834 @@
+
+
+
+<%
+// In: prime_distributed_projectPrlCc1B V5(10K)/coordinator_server.js
+// FINAL VERSION: Includes CSV logging, worker control, and enhanced state management.
+
+// --- MODULE IMPORTS ---
+// What: This section imports necessary modules (libraries) that provide pre-built functionality.
+// Why: Instead of writing everything from scratch (like how to handle WebSockets or file I/O), we use these battle-tested modules to speed up development and ensure stability.
+
+// How: The 'import' keyword is modern ES6 syntax for bringing in modules.
+// What: Imports the WebSocketServer and WebSocket classes from the 'ws' library.
+// Why: The 'ws' library is a popular, high-performance WebSocket implementation for Node.js.
+// Data: 'WebSocketServer' is a class used to create the main server that listens for connections. 'WebSocket' is a class representing an individual connection to a client.
+import { WebSocketServer, WebSocket } from 'ws';
+
+// What: Imports the entire 'fs' (File System) module.
+// Why: This module is essential for interacting with the computer's file system. We use it to read and write our state file and log files, making the server's progress persistent.
+// Data: 'fs' is an object containing many methods like 'writeFileSync', 'appendFileSync', 'existsSync', etc.
+import fs from 'fs';
+
+// What: Imports the entire 'path' module.
+// Why: This module provides utilities for working with file and directory paths. It's crucial for creating paths that work correctly across different operating systems (like Windows, macOS, and Linux), which might use different path separators ('\' vs '/').
+// Data: 'path' is an object with methods like 'join' which intelligently combines path segments.
+import path from 'path';
+
+// What: Imports the 'exec' function from the 'child_process' module.
+// Why: This allows our Node.js application to run external shell commands, just like typing a command in a terminal. We use this specifically to trigger a 'pm2 restart' command for the server itself.
+// Data: 'exec' is a function that takes a command string and a callback function to handle the output or errors.
+import { exec } from 'child_process';
+
+
+// --- CONFIGURATION ---
+// What: This section defines the core constants and settings for the server.
+// Why: Centralizing configuration makes the application easier to understand and modify. Changing a value here affects the entire system's behavior without needing to hunt through the code.
+
+// What: Creates a new instance of the WebSocketServer. This is the heart of our coordinator.
+// How: 'new WebSocketServer({...})' calls the constructor of the class with a configuration object.
+// Why: This line officially starts the server, making it listen for incoming connections on the specified port and host.
+// Data: The configuration object specifies:
+//   - port: 8080. The network port number. Clients must connect to this port.
+//   - host: '127.0.0.1' (localhost). This means the server will only accept connections from the same machine it's running on. For network access, you would change this to '0.0.0.0'.
+//   - path: '/ws'. This means clients must connect to the URL 'ws://127.0.0.1:8080/ws'. It's a way to namespace the WebSocket endpoint.
+const wss = new WebSocketServer({ port: 8080, host: '127.0.0.1', path: '/ws' });
+
+// What: Prints a message to the server's console.
+// Why: This provides immediate feedback to the person running the server, confirming that it has started successfully and on which address it is listening.
+console.log('Coordinator server running on ws://127.0.0.1:8080/ws');
+
+// What: Defines a constant 'N' representing the upper limit for the prime number search.
+// Why: This is the main problem parameter. A larger 'N' means more work to be done.
+// Data: The value is an integer, 2.5 billion, a computationally significant number.
+const N = 2500000000;
+
+// What: Defines the total number of smaller chunks (tasks) to divide the main problem into.
+// Why: This determines the granularity of the distributed work. More tasks mean smaller individual work units, which can be better for load balancing but adds communication overhead. Fewer, larger tasks reduce overhead but can lead to some workers finishing early while others are stuck with long tasks.
+// Data: The value is an integer, 25,000.
+const TOTAL_TASKS = 25000;
+
+// What: Defines the interval in milliseconds for sending "heartbeat" pings to workers.
+// Why: This is a health-check mechanism. By periodically checking if workers are responsive, the server can detect and handle clients that have disconnected unexpectedly (e.g., due to a browser crash or network loss).
+// Data: 30,000 milliseconds = 30 seconds.
+const HEARTBEAT_INTERVAL = 30000;
+
+// What: Defines the maximum time in milliseconds a worker is allowed to work on a single task before the server considers it "timed out".
+// Why: This prevents the entire computation from stalling if a worker receives a task but never returns a result (e.g., it's extremely slow, or an error caused it to hang). The server can reclaim the timed-out task and give it to another worker.
+// Data: 180,000 milliseconds = 3 minutes.
+const TASK_TIMEOUT = 180000;
+
+// What: Defines the full path and filename for storing the computation's state.
+// How: 'path.join' safely combines the current working directory ('process.cwd()') with the filename.
+// Why: Persisting the state allows the server to be stopped and restarted without losing all its progress. This is crucial for long-running computations.
+// Data: A string, e.g., '/home/user/myproject/computation_state.json'.
+const STATE_FILE = path.join(process.cwd(), 'computation_state.json');
+
+// What: Defines the full path and filename for the task log CSV file.
+// Why: Logging every task event provides a detailed audit trail for analysis, debugging, and performance monitoring.
+// Data: A string path.
+const TASK_LOG_FILE = path.join(process.cwd(), 'task_log.csv');
+
+// What: Defines the full path and filename for the worker log CSV file.
+// Why: Logging worker connections and disconnections helps track participant activity and diagnose connection issues.
+// Data: A string path.
+const WORKER_LOG_FILE = path.join(process.cwd(), 'worker_log.csv');
+
+
+// --- STATE VARIABLES ---
+// What: This section declares variables that hold the server's in-memory state.
+// Why: These variables track everything happening in the system: who is connected, what work needs to be done, what work has been done, and the overall status of the computation.
+// How: 'let' is used because these variables will be reassigned throughout the application's lifecycle.
+
+// What: A variable to hold the WebSocket connection object for the director/UI client.
+// Why: The server needs a direct reference to the director to send it logs, progress updates, and state changes.
+// Data: Starts as 'null' and will be assigned a WebSocket object when the director connects.
+let directorSocket = null;
+
+// What: A Map to store all connected worker clients.
+// DSA: A Map is a key-value data structure. Here, the key is the 'workerId' (a string) and the value is an object containing the worker's WebSocket connection and its metadata.
+// Why: A Map provides efficient (O(1) average time complexity) lookup, addition, and deletion of workers by their ID, which is much better than searching through an array.
+// Data: e.g., { 'worker-abc-123' => { ws: [WebSocket object], isBusy: false, ... } }
+const workers = new Map();
+
+// What: An array to act as a queue for tasks that need to be processed.
+// DSA: A FIFO (First-In, First-Out) queue. We use array methods 'shift()' (to get from the front) and 'unshift()' (to add back to the front) to manage this.
+// Why: This structure holds all the work units waiting to be assigned to an available worker.
+// Data: An array of objects, e.g., [{ taskId: 0, start: 2, end: 100000 }, ...]
+let taskQueue = [];
+
+// What: An array to store the results (prime counts) from each completed task.
+// DSA: An array where the index corresponds to the 'taskId'.
+// Why: This allows for quick storage and retrieval of results. The final total can be calculated by summing this array. Storing 'null' for incomplete tasks makes it easy to check the overall progress.
+// Data: e.g., [ "1234", "5678", null, "9101", ... ] (results are stored as strings to handle BigInt).
+let results = new Array(TOTAL_TASKS).fill(null);
+
+// What: A boolean flag to indicate whether the computation is currently active.
+// Why: This acts as a global switch. Functions like 'assignTaskToAvailableWorker' will only run if this is 'true', allowing the director to pause and resume the computation.
+// Data: 'true' or 'false'.
+let isRunning = false;
+
+// What: A variable to store the timestamp of when the computation started.
+// Why: This allows for calculating the total elapsed time of the computation.
+// Data: A number (from Date.now()) or 'null'.
+let computationStartTime = null;
+
+
+// --- LOGGING ---
+// What: This section sets up the logging functionality to write data to CSV files.
+// Why: CSV (Comma-Separated Values) is a simple, universal format that can be easily opened and analyzed in spreadsheet software like Excel or Google Sheets.
+
+// What: An 'if' block to check if the task log file already exists.
+// How: 'fs.existsSync()' returns true if the file exists, false otherwise. '!' negates this.
+// Why: We only want to write the header row ('Timestamp,TaskID,...') to the CSV file once, when it's first created. If we add the header every time the server starts, the file becomes invalid.
+if (!fs.existsSync(TASK_LOG_FILE)) {
+    // What: Writes the CSV header string to the task log file.
+    // How: 'fs.writeFileSync()' creates the file (if it doesn't exist) and writes the entire string to it, overwriting any existing content.
+    fs.writeFileSync(TASK_LOG_FILE, 'Timestamp,TaskID,WorkerID,Status,Duration(ms)\n');
+}
+
+// What: Similar check for the worker log file.
+// Why: Ensures the worker log also gets a header only on its initial creation.
+if (!fs.existsSync(WORKER_LOG_FILE)) {
+    // What: Writes the CSV header string for the worker log.
+    fs.writeFileSync(WORKER_LOG_FILE, 'Timestamp,WorkerID,IPAddress,CPU_Cores,Browser,Status\n');
+}
+
+// What: Defines a function 'logTaskEvent' to append a new row to the task log file.
+// How: This is an arrow function. It takes several parameters describing the task event.
+// Why: Encapsulating the logging logic in a function makes the main code cleaner and avoids repetition. We can simply call 'logTaskEvent(...)' wherever needed.
+const logTaskEvent = (taskId, workerId, status, duration = '') => {
+    // What: Gets the current time in a standardized ISO 8601 format (e.g., '2025-08-29T17:48:20.123Z').
+    // Why: Using a standard, unambiguous timestamp format is crucial for chronological sorting and analysis.
+    const timestamp = new Date().toISOString();
+    // What: Creates the CSV row as a string using template literals.
+    // How: The variables are embedded in the string. The '\n' at the end is a newline character, which ensures the next log entry will be on a new line.
+    const logEntry = `${timestamp},${taskId},${workerId},${status},${duration}\n`;
+    // What: Appends the new log entry to the end of the task log file.
+    // How: 'fs.appendFileSync()' adds content to a file without overwriting it. It's "sync" (synchronous), meaning the code will pause until the write is complete. For a high-throughput server, an async version might be better, but for this logging purpose, sync is simpler and acceptable.
+    fs.appendFileSync(TASK_LOG_FILE, logEntry);
+};
+
+// What: Defines a similar logging function for worker-related events.
+// Why: Centralizes the logic for writing to the 'worker_log.csv' file.
+const logWorkerEvent = (workerId, ip, cpu, browser, status) => {
+    // What: Gets the current timestamp.
+    const timestamp = new Date().toISOString();
+    // What: Creates the CSV row for the worker log. Note the quotes around the browser string to handle cases where the browser info might contain a comma.
+    const logEntry = `${timestamp},${workerId},${ip},${cpu},"${browser}",${status}\n`;
+    // What: Appends the entry to the worker log file.
+    fs.appendFileSync(WORKER_LOG_FILE, logEntry);
+};
+
+
+// --- STATE PERSISTENCE FUNCTIONS ---
+// What: Functions responsible for saving and loading the server's state to/from a file.
+// Why: This provides fault tolerance. If the server crashes or is restarted, it can resume from where it left off.
+
+// What: A "replacer" function for JSON.stringify.
+// Why: The built-in JSON format does not support JavaScript's 'BigInt' type. If we try to stringify an object containing a BigInt, it will throw an error. This function provides a custom rule: if a value is a BigInt, convert it to a string for serialization.
+// How: 'JSON.stringify' can take a second argument, a function that gets called for each key/value pair. We check the 'typeof' the value and act accordingly.
+function bigIntReplacer(key, value) { return typeof value === 'bigint' ? value.toString() : value; }
+
+// What: A function to save the current state of critical variables to the 'STATE_FILE'.
+function saveState() {
+    // What: A 'try...catch' block for error handling.
+    // Why: File I/O operations can fail (e.g., disk full, permissions error). This block ensures that if an error occurs, the server logs it and continues running instead of crashing.
+    try {
+        // What: Creates a 'state' object containing all the variables we want to save.
+        // Why: We select only the necessary variables to keep the state file focused and manageable.
+        const state = { N, TOTAL_TASKS, isRunning, computationStartTime, results, taskQueue };
+        // What: Converts the JavaScript 'state' object into a JSON formatted string.
+        // How: It uses our custom 'bigIntReplacer' to handle any BigInts that might be in the stats.
+        const stateString = JSON.stringify(state, bigIntReplacer);
+        // What: Writes the JSON string to the state file.
+        // How: 'utf8' is the character encoding, which is a standard for web and text files.
+        fs.writeFileSync(STATE_FILE, stateString, 'utf8');
+    } catch (err) {
+        // What: If an error occurs in the 'try' block, this code runs.
+        // What: It prints an error message to the server console.
+        console.error('Error saving state:', err);
+    }
+}
+
+// What: A function to load the state from 'STATE_FILE' when the server starts.
+// Why: This is the recovery part of our persistence mechanism.
+function loadState() {
+    // What: A 'try...catch' block to handle potential errors during file reading or parsing.
+    try {
+        // What: Checks if the state file actually exists.
+        if (fs.existsSync(STATE_FILE)) {
+            // What: Reads the entire content of the state file into a string.
+            const stateString = fs.readFileSync(STATE_FILE, 'utf8');
+            // What: Parses the JSON string back into a JavaScript object.
+            // Why: This is the reverse of 'JSON.stringify'.
+            const state = JSON.parse(stateString);
+
+            // What: Restores the server's in-memory variables from the loaded state object.
+            // Why: This brings the server back to the exact state it was in before it was stopped.
+            isRunning = state.isRunning;
+            computationStartTime = state.computationStartTime;
+            results = state.results;
+            taskQueue = state.taskQueue;
+            // What: Logs a confirmation message.
+            console.log(`[State] Computation state loaded from ${STATE_FILE}`);
+
+            // --- Automatic Recovery Logic ---
+            // What: Checks if the server was in a 'running' state when it was last saved.
+            // Why: If it was running, it's possible some workers were in the middle of tasks. These "in-flight" tasks need to be identified and re-added to the queue to ensure they are not lost.
+            if (isRunning) {
+                // What: Logs that the recovery process is starting.
+                console.log('[Recovery] System was running. Checking for incomplete tasks...');
+                // What: A counter to track how many tasks were recovered.
+                let recoveredCount = 0;
+                // What: Iterates over the 'results' array, checking each task's status.
+                // How: 'forEach' provides the item ('result') and its index ('taskId').
+                results.forEach((result, taskId) => {
+                    // What: The recovery condition. A task is considered "in-flight" or lost if:
+                    // 1. Its result is 'null' (it was not completed).
+                    // 2. It is NOT currently in the 'taskQueue' (it was already assigned).
+                    if (result === null && !taskQueue.some(task => task.taskId === taskId)) {
+                        // What: Re-calculates the task's start and end range based on its ID. This is necessary because the task object itself wasn't saved, only its absence from the queue and results.
+                        const chunkSize = Math.floor(N / TOTAL_TASKS);
+                        const start = taskId * chunkSize + 1;
+                        const end = (taskId === TOTAL_TASKS - 1) ? N : (taskId + 1) * chunkSize;
+                        // What: Re-creates the task object and adds it to the front of the queue.
+                        // How: 'unshift' adds the item to the beginning of the array.
+                        // Why: We add it to the front to prioritize these recovered tasks.
+                        taskQueue.unshift({ taskId: taskId, start: (taskId === 0 ? 2 : start), end });
+                        // What: Increments the recovery counter.
+                        recoveredCount++;
+                    }
+                });
+                // What: Checks if any tasks were actually recovered.
+                if (recoveredCount > 0) {
+                    // What: Logs a summary of the recovery.
+                    console.log(`[Recovery] Re-queued ${recoveredCount} in-flight tasks.`);
+                    // What: Saves the state again immediately.
+                    // Why: The 'taskQueue' has been modified, so we need to persist this change right away.
+                    saveState();
+                }
+            }
+        } else {
+            // What: This 'else' block runs if 'STATE_FILE' does not exist.
+            console.log('[State] No previous state file found. Starting fresh.');
+            // What: Calls the function to create a brand new task queue.
+            initializeTasks();
+        }
+    } catch (err) {
+        // What: This 'catch' block runs if any error occurs during the process (e.g., the state file is corrupted and cannot be parsed).
+        console.error('Error loading state, starting fresh:', err);
+        // What: In case of an error, we play it safe and start with a fresh state.
+        initializeTasks();
+    }
+}
+
+
+// --- DIRECTOR COMMUNICATION ---
+// What: Functions dedicated to sending information to the director/UI client.
+// Why: This modularizes communication, making the main logic cleaner and easier to read.
+
+// What: A function to send a log message to the director.
+const logToDirector = (message) => {
+    // What: Checks if the 'directorSocket' exists AND if its connection is currently open.
+    // Why: It's crucial to check 'readyState' before sending. Attempting to send on a closed or non-existent socket would cause an error and crash the server.
+    if (directorSocket && directorSocket.readyState === WebSocket.OPEN) {
+        // What: Sends a JSON string to the director.
+        // How: The message is wrapped in an object with a 'type' property.
+        // Why: Using a 'type' property is a standard pattern for WebSocket communication. It allows the client-side code to easily determine how to handle the incoming message.
+        directorSocket.send(JSON.stringify({ type: 'log', message: `[${new Date().toLocaleTimeString()}] ${message}` }));
+    }
+};
+
+// What: A function to send a progress update to the director.
+const updateDirectorProgress = (taskId, count, totalCompleted) => {
+    // What: Safety check on the director socket connection.
+    if (directorSocket && directorSocket.readyState === WebSocket.OPEN) {
+        // What: Sends a message of type 'progress' with the task details.
+        // Why: This allows the UI to update the progress bar and other visual elements in real-time. 'count' is converted to a string to handle BigInt.
+        directorSocket.send(JSON.stringify({ type: 'progress', taskId, count: count.toString(), totalCompleted }));
+    }
+};
+
+// What: A function to send updated information about a specific worker to the director.
+const updateDirectorWorkerInfo = (workerId, workerInfo) => {
+    // What: Safety check on the director socket connection.
+    if (directorSocket && directorSocket.readyState === WebSocket.OPEN) {
+        // What: Creates the message payload.
+        const message = JSON.stringify({ type: 'workerUpdate', workerId, workerInfo }, bigIntReplacer);
+        // What: Sends the message.
+        // Why: This keeps the director's display of connected workers (their status, tasks completed, etc.) up-to-date. The 'bigIntReplacer' is used here in case the worker stats contain BigInts.
+        directorSocket.send(message);
+    }
+};
+
+
+// --- CORE LOGIC FUNCTIONS ---
+// What: The main functions that manage the distribution and processing of tasks.
+
+// What: A function to create the initial list of all tasks.
+function initializeTasks() {
+    // What: Clears any existing tasks from the queue.
+    // Why: Ensures we start with a clean slate, especially if this function is called to reset the state.
+    taskQueue.length = 0;
+    // What: Resets the results array, filling it with 'null' values.
+    results = new Array(TOTAL_TASKS).fill(null);
+    // What: Calculates the size of each task chunk.
+    // How: 'Math.floor' ensures we get an integer value.
+    const chunkSize = Math.floor(N / TOTAL_TASKS);
+    // What: A 'for' loop to create each task object.
+    // How: It iterates from 0 up to TOTAL_TASKS - 1.
+    for (let i = 0; i < TOTAL_TASKS; i++) {
+        // What: Calculates the starting number for this task's range.
+        const start = i * chunkSize + 1;
+        // What: Calculates the ending number.
+        // How: A ternary operator is used to handle the very last task.
+        // Why: Due to integer division, the last chunk might not perfectly reach N. This ensures the final task goes all the way up to N, covering the entire range.
+        const end = (i === TOTAL_TASKS - 1) ? N : (i + 1) * chunkSize;
+        // What: Pushes the newly created task object onto the end of the 'taskQueue' array.
+        // How: The first task (i=0) has a special case to start from 2, since 1 is not a prime.
+        taskQueue.push({ taskId: i, start: (i === 0 ? 2 : start), end });
+    }
+    // What: Logs that initialization is complete.
+    console.log(`[Coordinator] Task queue initialized.`);
+    // What: Saves the newly created clean state to the file.
+    saveState();
+}
+
+// What: A function to find an idle worker and assign it the next available task.
+function assignTaskToAvailableWorker() {
+    // What: An initial check. If the computation is paused or there are no tasks left, the function does nothing.
+    // How: 'return' immediately exits the function.
+    if (!isRunning || taskQueue.length === 0) return;
+
+    // What: Iterates through the 'workers' Map.
+    // How: 'for...of' loop on 'workers.entries()' gives us both the key ('workerId') and the value ('workerData') for each entry in the map.
+    for (const [workerId, workerData] of workers.entries()) {
+        // What: Checks if the worker is available for work.
+        // How: It must have an open WebSocket connection AND its 'isBusy' flag must be false.
+        if (workerData.ws.readyState === WebSocket.OPEN && !workerData.isBusy) {
+            // What: Takes the next task from the front of the queue.
+            // How: 'array.shift()' removes and returns the first element.
+            const task = taskQueue.shift();
+            // What: A check to ensure a task was actually retrieved (the queue might be empty).
+            if (task) {
+                // What: Marks the worker as busy and records the assignment details.
+                workerData.isBusy = true;
+                workerData.assignedTask = task;
+                workerData.taskAssignedTime = Date.now(); // Record the start time for timeout tracking.
+                // What: Sends the task details to the worker client.
+                workerData.ws.send(JSON.stringify({ type: 'task', task }));
+                // What: Notifies the director that a task has been assigned.
+                logToDirector(`Assigned task ${task.taskId} to worker ${workerId}`);
+                // What: Updates the worker's status on the director's UI.
+                updateDirectorWorkerInfo(workerId, { ...workerData, status: 'Busy', currentTask: task.taskId, ipAddress: workerData.ipAddress });
+                // What: Logs the "Assigned" event to the task log CSV file.
+                logTaskEvent(task.taskId, workerId, 'Assigned');
+                // What: Saves the state because the 'taskQueue' has changed.
+                saveState();
+                // What: Exits the function.
+                // Why: We have successfully assigned one task, so our job is done for now. We don't need to continue looping through other workers.
+                return;
+            }
+        }
+    }
+}
+
+
+// --- PERIODIC HEALTH CHECKS ---
+// What: A recurring timer to perform maintenance tasks like heartbeats and timeout checks.
+// How: 'setInterval' repeatedly calls the provided function at the specified interval (HEARTBEAT_INTERVAL).
+setInterval(() => {
+    // --- Heartbeat Check ---
+    // What: Iterates over all connected workers.
+    workers.forEach((workerData, workerId) => {
+        // What: Gets a reference to the worker's WebSocket object.
+        const ws = workerData.ws;
+        // What: Checks the 'isAlive' flag. This flag is set to 'false' before the ping and is set back to 'true' only when a 'pong' is received.
+        // Why: If a 'pong' wasn't received since the last check, it means the client is unresponsive.
+        if (ws.isAlive === false) {
+            // What: Logs the termination event.
+            console.log(`[Heartbeat] Terminating unresponsive worker: ${workerId}`);
+            // What: Forcibly closes the connection.
+            // Why: This will trigger the 'close' event handler for that worker, which will clean up its resources and re-queue its task if it had one.
+            return ws.terminate();
+        }
+        // What: Sets the flag to 'false' in preparation for the next check.
+        ws.isAlive = false;
+        // What: Sends a WebSocket 'ping' frame to the client. The client's browser/runtime will automatically respond with a 'pong' frame if it's alive.
+        ws.ping();
+    });
+
+    // --- Task Timeout Check ---
+    // What: Checks if the computation is currently running.
+    // Why: We should only check for timeouts if work is supposed to be happening.
+    if (isRunning) {
+        // What: Iterates over all connected workers.
+        workers.forEach((workerData, workerId) => {
+            // What: Checks if a worker is busy AND if the time elapsed since the task was assigned is greater than the allowed TASK_TIMEOUT.
+            if (workerData.isBusy && (Date.now() - workerData.taskAssignedTime > TASK_TIMEOUT)) {
+                // What: Notifies the director of the timeout.
+                logToDirector(`Worker ${workerId} timed out on task ${workerData.assignedTask.taskId}. Re-queuing.`);
+                // What: Logs the timeout event to the console.
+                console.log(`[Timeout] Worker ${workerId} timed out.`);
+                // What: Logs the timeout event to the CSV file.
+                logTaskEvent(workerData.assignedTask.taskId, workerId, 'Timeout');
+                // What: Adds the timed-out task back to the front of the queue.
+                if (workerData.assignedTask) taskQueue.unshift(workerData.assignedTask);
+                // What: Resets the worker's state back to idle.
+                workerData.isBusy = false;
+                workerData.assignedTask = null;
+                workerData.taskAssignedTime = null;
+                // What: Updates the worker's status on the director's UI.
+                updateDirectorWorkerInfo(workerId, { ...workerData, status: 'Idle (Timed Out)', currentTask: null, ipAddress: workerData.ipAddress });
+                // What: Saves the state because the 'taskQueue' has been modified.
+                saveState();
+                // What: Tries to assign a new task immediately, possibly to a different worker.
+                assignTaskToAvailableWorker();
+            }
+        });
+    }
+}, HEARTBEAT_INTERVAL); // What: The interval in milliseconds for this entire function to run.
+
+
+// --- WEBSOCKET CONNECTION HANDLING ---
+// What: This is the main event listener for the WebSocket server. The code inside this block runs every time a new client connects.
+// How: 'wss.on('connection', callback)' registers a function to be executed for the 'connection' event.
+// Data: The callback receives 'ws' (the WebSocket object for the new connection) and 'req' (the initial HTTP request object).
+wss.on('connection', (ws, req) => {
+
+    // What: Retrieves the IP address of the connecting client.
+    // How: It first checks for the 'x-forwarded-for' header, which is common when the server is behind a reverse proxy or load balancer. If that's not present, it falls back to the direct socket address.
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+    // What: Initializes the 'isAlive' property for the new connection.
+    // Why: This is part of the heartbeat mechanism.
+    ws.isAlive = true;
+
+    // What: Registers an event listener for the 'pong' event on this specific connection.
+    // Why: When the server receives a 'pong' from this client, this function runs, setting 'isAlive' back to true, confirming the client is still responsive.
+    ws.on('pong', () => { ws.isAlive = true; });
+
+    // What: Registers an event listener for the 'message' event. This code runs every time a message is received from this specific client.
+    // Data: The 'message' parameter contains the data sent by the client.
+    ws.on('message', message => {
+        // What: Logs the raw incoming message for debugging purposes.
+        console.log(`[Debug] Received message: ${message}`);
+        // What: Parses the incoming message (which is a JSON string) into a JavaScript object.
+        const data = JSON.parse(message);
+
+        // What: A 'switch' statement to handle different message types.
+        // Why: This is a clean way to route incoming messages to the correct logic based on their 'type' property. It's more readable than a long chain of 'if...else if' statements.
+        switch (data.type) {
+            // What: This 'case' handles the connection of a director/UI client.
+            case 'registerDirector':
+                // What: Stores the director's WebSocket object in the global state variable.
+                directorSocket = ws;
+                // What: Adds a 'type' property to the WebSocket object itself for later identification (e.g., in the 'close' event).
+                ws.type = 'director';
+                // What: Sends a welcome message back to the director.
+                logToDirector('👑 Director connected. Syncing state...');
+                // What: Creates a large payload object containing the entire current state of the computation.
+                const statePayload = {
+                    type: 'fullState',
+                    nValue: N,
+                    totalTasks: TOTAL_TASKS,
+                    isRunning: isRunning,
+                    results: results,
+                    // What: Creates a serializable version of the 'workers' Map.
+                    // How: 'Array.from(workers.entries())' converts the map into an array of [key, value] pairs. '.map()' then transforms each pair.
+                    // Why: We must remove the 'ws' WebSocket object from the worker data before sending it, as it's a complex object with circular references and cannot be JSON.stringified. The '...workerInfo' spread syntax copies all other properties.
+                    workers: Array.from(workers.entries()).map(([id, worker]) => {
+                        const { ws, ...workerInfo } = worker; // Destructuring to omit 'ws'
+                        return [id, workerInfo];
+                    })
+                };
+                // What: Sends the complete state object to the director.
+                // Why: This allows the director UI to fully render the current state of the system as soon as it connects.
+                directorSocket.send(JSON.stringify(statePayload, bigIntReplacer));
+                // What: 'break' exits the switch statement.
+                break;
+
+            // What: This 'case' handles the connection of a new worker client.
+            case 'registerWorker':
+                // What: Extracts the unique ID sent by the worker.
+                const workerId = data.workerId;
+                // What: A safety check. If a worker connects without an ID, we close the connection.
+                if (!workerId) return ws.close();
+                // What: Stores the worker's ID and type on its WebSocket object.
+                ws.workerId = workerId;
+                ws.type = 'worker';
+                // What: Creates a new object to store all the data about this worker.
+                const newWorkerData = {
+                    ws, // The actual WebSocket connection object
+                    isBusy: false,
+                    assignedTask: null,
+                    taskAssignedTime: null,
+                    stats: { tasksCompleted: 0, primesFound: 0n, lastTaskTime: null },
+                    browserInfo: data.browserInfo || 'Unknown',
+                    cpuCores: data.cpuCores || 'N/A',
+                    ipAddress: clientIp,
+                    status: 'Idle',
+                    currentTask: null
+                };
+                // What: Adds the new worker to the 'workers' Map using its ID as the key.
+                workers.set(workerId, newWorkerData);
+                // What: Notifies the director that a new worker has joined.
+                logToDirector(`Worker ${workerId} at ${clientIp} connected.`);
+                // What: Logs the connection event to the worker log CSV file.
+                logWorkerEvent(workerId, clientIp, newWorkerData.cpuCores, newWorkerData.browserInfo, 'Connected');
+                // What: Sends the new worker's full details to the director to be added to the UI.
+                updateDirectorWorkerInfo(workerId, newWorkerData);
+                // What: Immediately tries to assign a task to this new worker if work is available.
+                assignTaskToAvailableWorker();
+                break;
+
+            // What: This 'case' handles the 'start' command from the director.
+            case 'startComputation':
+                // What: Checks if a state file from a previous run exists.
+                if (fs.existsSync(STATE_FILE)) {
+                    // What: Notifies the director that the old state is being cleared.
+                    logToDirector('Clearing previous state for a new computation.');
+                    // What: Deletes the old state file.
+                    // Why: A "start" command implies a completely fresh run, so we shouldn't resume from any old data.
+                    fs.unlinkSync(STATE_FILE);
+                }
+                // What: Sets the global running flag to true.
+                isRunning = true;
+                // What: Records the start time.
+                computationStartTime = Date.now();
+                // What: Initializes the tasks and results from scratch.
+                initializeTasks();
+                // What: Clears the old task log file by writing only the header to it.
+                fs.writeFileSync(TASK_LOG_FILE, 'Timestamp,TaskID,WorkerID,Status,Duration(ms)\n');
+                // What: Notifies the director that the computation is starting.
+                logToDirector(`Starting new computation...`);
+                // What: Saves the new, initial state.
+                saveState();
+                // What: Kicks off the process by trying to assign tasks to all connected workers.
+                workers.forEach((w, id) => assignTaskToAvailableWorker());
+                // What: Sends a specific state change message to the director.
+                // Why: This allows the UI to reliably enable/disable buttons (e.g., disable 'Start', enable 'Pause').
+                if (directorSocket) directorSocket.send(JSON.stringify({ type: 'computationStateChanged', isRunning: true }));
+                break;
+
+            // What: This 'case' handles the 'pause' command from the director.
+            case 'pauseComputation':
+                // What: Checks if the computation is currently running.
+                if (isRunning) {
+                    // What: Sets the global running flag to false.
+                    // Why: This will prevent 'assignTaskToAvailableWorker' from assigning any new tasks. Workers currently busy will finish their tasks.
+                    isRunning = false;
+                    // What: Notifies the director.
+                    logToDirector('⏸️ Computation paused.');
+                    // What: Saves the paused state.
+                    saveState();
+                    // What: Sends the specific state change message to the director's UI.
+                    if (directorSocket) directorSocket.send(JSON.stringify({ type: 'computationStateChanged', isRunning: false }));
+                }
+                break;
+
+            // What: This 'case' handles the 'resume' command from the director.
+            case 'resumeComputation':
+                // What: Checks if the computation is currently paused.
+                if (!isRunning) {
+                    // What: Sets the global running flag back to true.
+                    isRunning = true;
+                    // What: Notifies the director.
+                    logToDirector('▶️ Computation resumed.');
+                    // What: Saves the resumed state.
+                    saveState();
+                    // What: Sends the specific state change message to the director's UI.
+                    if (directorSocket) directorSocket.send(JSON.stringify({ type: 'computationStateChanged', isRunning: true }));
+                    // What: Kicks off the work distribution again.
+                    assignTaskToAvailableWorker();
+                }
+                break;
+
+            // What: This 'case' handles the 'restart server' command from the director.
+            case 'restartServer':
+                // What: Notifies the director that the restart is being initiated.
+                logToDirector('🔄 Server restart initiated...');
+                // What: Executes a shell command using 'exec'.
+                // Why: This assumes the server is being managed by a process manager called PM2. 'pm2 restart coordinator' is a command that tells PM2 to gracefully restart the application named 'coordinator'. 'sudo' is used in case pm2 requires root privileges.
+                exec('sudo pm2 restart coordinator', (error, stdout, stderr) => {
+                    // What: This is a callback function that runs after the command finishes.
+                    // What: Checks if there was an error executing the command.
+                    if (error) {
+                        // What: Logs the error to the server console and sends an error message to the director.
+                        console.error(`exec error: ${error}`);
+                        logToDirector(`Error restarting server: ${error.message}`);
+                        return; // Exit the callback.
+                    }
+                    // What: Logs standard output and standard error from the command for debugging.
+                    console.log(`stdout: ${stdout}`);
+                    console.error(`stderr: ${stderr}`);
+                });
+                break;
+
+            // What: This 'case' handles the 'clear state' command from the director.
+            case 'clearState':
+                // What: Notifies the director that the command was received.
+                logToDirector('Received command to clear state. Resetting server memory and deleting file...');
+
+                // What: A try...catch block for the file deletion operation.
+                try {
+                    // What: Checks if the state file exists.
+                    if (fs.existsSync(STATE_FILE)) {
+                        // What: Deletes the file.
+                        fs.unlinkSync(STATE_FILE);
+                        console.log(`[State] Deleted computation_state.json by director's command.`);
+                    }
+                } catch (err) {
+                    // What: Handles any errors during file deletion.
+                    console.error('Error deleting state file:', err);
+                    logToDirector(`❌ Error deleting state file: ${err.message}`);
+                }
+
+                // What: Resets all the in-memory state variables to their default, initial values.
+                isRunning = false;
+                computationStartTime = null;
+                results = new Array(TOTAL_TASKS).fill(null);
+                taskQueue = []; // Completely empty the queue.
+                initializeTasks(); // Re-create the full set of tasks.
+
+                // What: Immediately sends the newly cleared state back to the director.
+                // Why: This ensures the director's UI instantly reflects the reset, showing an empty progress bar and zeroed stats.
+                if (directorSocket && directorSocket.readyState === WebSocket.OPEN) {
+                    logToDirector('✅ Server state cleared. Pushing clean state to UI.');
+                    // What: Rebuilds the 'fullState' payload, similar to the 'registerDirector' case.
+                    const statePayload = {
+                        type: 'fullState',
+                        nValue: N,
+                        totalTasks: TOTAL_TASKS,
+                        isRunning: isRunning,
+                        results: results,
+                        workers: Array.from(workers.entries()).map(([id, worker]) => {
+                            // What: Also resets the individual worker stats that are being tracked in memory.
+                            worker.stats.tasksCompleted = 0;
+                            worker.stats.primesFound = 0n; // Use '0n' for BigInt zero.
+                            const { ws, ...workerInfo } = worker;
+                            return [id, workerInfo];
+                        })
+                    };
+                    // What: Sends the clean state payload.
+                    directorSocket.send(JSON.stringify(statePayload, bigIntReplacer));
+                }
+                break;
+
+            // What: This 'case' handles the command to terminate a specific worker.
+            case 'terminateWorker':
+                // What: Retrieves the worker's data from the Map using the ID provided in the message.
+                const workerToTerminate = workers.get(data.workerId);
+                // What: Checks if the worker actually exists in the map.
+                if (workerToTerminate) {
+                    // What: Notifies the director of the action.
+                    logToDirector(`Director is terminating worker ${data.workerId}`);
+                    // What: Forcefully closes the worker's WebSocket connection.
+                    workerToTerminate.ws.terminate();
+                }
+                break;
+
+            // What: This 'case' handles periodic memory usage updates from workers.
+            case 'memoryUpdate':
+                // What: Gets the worker from the map.
+                const memWorker = workers.get(data.workerId);
+                // What: Checks if the worker exists.
+                if (memWorker) {
+                    // What: Adds or updates the 'memory' property on the worker's data object.
+                    memWorker.memory = data.memory;
+                    // What: Pushes the updated worker information (now including memory stats) to the director.
+                    updateDirectorWorkerInfo(data.workerId, memWorker);
+                }
+                break;
+
+            // What: This 'case' handles "I'm still alive and working" messages from a worker.
+            case 'stillWorking':
+                // What: Gets the worker from the map.
+                const activeWorker = workers.get(data.workerId);
+                // What: Checks that the worker exists and is supposed to be busy.
+                if (activeWorker && activeWorker.isBusy) {
+                    // What: Resets the worker's timeout clock.
+                    // Why: The worker has proven it's not frozen, so we give it another full 'TASK_TIMEOUT' period before we check it again. This is essential for tasks that might legitimately take longer than the timeout period.
+                    activeWorker.taskAssignedTime = Date.now();
+                    // What: Checks if the worker also included memory info in its heartbeat.
+                    if (data.memory) {
+                        // What: Updates the memory stats and pushes the update to the director.
+                        activeWorker.stats.memory = data.memory;
+                        updateDirectorWorkerInfo(data.workerId, activeWorker);
+                    }
+                }
+                break;
+
+            // What: This 'case' handles a completed task result from a worker.
+            case 'result':
+                // What: Gets the worker who sent the result.
+                const worker = workers.get(data.workerId);
+                // What: A critical validation check. We ignore the result if:
+                // 1. The worker doesn't exist.
+                // 2. The server doesn't think this worker was busy.
+                // 3. The 'taskId' in the result message doesn't match the task the server assigned to this worker.
+                // Why: This prevents processing duplicate or incorrect results, for example, from a task that had previously timed out but the worker eventually finished and sent the result late.
+                if (!worker || !worker.assignedTask || worker.assignedTask.taskId !== data.taskId) return;
+
+                // What: Calculates how long the task took to complete.
+                const taskDuration = Date.now() - worker.taskAssignedTime;
+                // What: Logs the completion event to the CSV file.
+                logTaskEvent(data.taskId, data.workerId, 'Completed', taskDuration);
+
+                // What: Converts the prime count from the message (which could be a string) into a BigInt.
+                const primeCount = BigInt(data.count);
+                // What: Stores the result in the 'results' array at the correct index. We store it as a string to be compatible with JSON.
+                results[data.taskId] = primeCount.toString();
+                // What: Updates the worker's personal statistics.
+                worker.stats.tasksCompleted++;
+                worker.stats.primesFound += primeCount; // BigInt addition.
+                worker.stats.lastTaskTime = Date.now();
+                // What: Resets the worker's state to 'Idle' as it is now free.
+                worker.isBusy = false;
+                worker.assignedTask = null;
+                worker.taskAssignedTime = null;
+                // What: Calculates the total number of tasks that have been completed so far.
+                // How: '.filter(r => r !== null)' creates a new array containing only the non-null results, and '.length' gets its size.
+                const completedTotal = results.filter(r => r !== null).length;
+
+                // What: Sends the progress update to the director.
+                updateDirectorProgress(data.taskId, primeCount, completedTotal);
+                // What: Updates the worker's status on the director UI to 'Idle'.
+                updateDirectorWorkerInfo(data.workerId, { ...worker, status: 'Idle', currentTask: null, ipAddress: worker.ipAddress });
+                // What: Saves the state because the 'results' array has changed.
+                saveState();
+
+                // What: Checks if all tasks are now complete.
+                if (completedTotal === TOTAL_TASKS) {
+                    // What: If complete, set the running flag to false.
+                    isRunning = false;
+                    // What: Save the final, completed state.
+                    saveState();
+                    // What: Calculate the grand total of all primes found.
+                    // How: '.reduce()' iterates over the results array, accumulating a sum. The initial value is '0n' (BigInt zero).
+                    const totalPrimes = results.reduce((sum, count) => sum + BigInt(count || 0), 0n);
+                    // What: Send a final completion message to the director.
+                    logToDirector(`🎉 ALL TASKS COMPLETE! Final Total: ${totalPrimes.toLocaleString()}`);
+                } else {
+                    // What: If not all tasks are complete, immediately try to assign a new task to the now-idle worker.
+                    assignTaskToAvailableWorker();
+                }
+                break;
+
+            // What: This 'case' handles an error message from a worker.
+            case 'error':
+                // What: Gets the worker who sent the error.
+                const errorWorker = workers.get(data.workerId);
+                // What: Validation check. Ignore if the worker doesn't exist or wasn't assigned a task.
+                if (!errorWorker || !errorWorker.assignedTask) return;
+
+                // What: Notifies the director of the error and that the task is being re-queued.
+                logToDirector(`Worker ${data.workerId}... error on task ${errorWorker.assignedTask.taskId}. Re-queuing.`);
+                // What: Logs the error event to the CSV file.
+                logTaskEvent(errorWorker.assignedTask.taskId, data.workerId, 'Error');
+                // What: Adds the failed task back to the front of the queue.
+                taskQueue.unshift(errorWorker.assignedTask);
+                // What: Resets the worker's state, marking it as having an error status.
+                errorWorker.isBusy = false;
+                errorWorker.assignedTask = null;
+                // What: Updates the director UI to show the worker's error state.
+                updateDirectorWorkerInfo(data.workerId, { ...errorWorker, status: 'Error', currentTask: null, ipAddress: errorWorker.ipAddress });
+                // What: Saves the state because the task queue was modified.
+                saveState();
+                // What: Tries to assign a new task, possibly to the same worker if it's still connected, or another one.
+                assignTaskToAvailableWorker();
+                break;
+        }
+    });
+
+    // What: Registers an event listener for the 'close' event. This code runs when the connection to this client is terminated for any reason (e.g., client closes browser, network loss, server terminates it).
+    ws.on('close', () => {
+        // What: Checks if the disconnected client was the director.
+        if (ws.type === 'director') {
+            // What: Resets the director socket variable.
+            directorSocket = null;
+            console.log('Director disconnected.');
+        // What: Checks if the disconnected client was a worker and had a registered ID.
+        } else if (ws.type === 'worker' && ws.workerId) {
+            // What: Retrieves the worker's data from the map.
+            const workerData = workers.get(ws.workerId);
+            // What: Checks if the worker's data was found.
+            if (workerData) {
+                // What: Logs the disconnection event to the CSV file.
+                logWorkerEvent(ws.workerId, workerData.ipAddress, workerData.cpuCores, workerData.browserInfo, 'Disconnected');
+                // What: Checks if the worker was in the middle of a task when it disconnected.
+                if (workerData.assignedTask) {
+                    // What: Notifies the director and re-queues the task.
+                    logToDirector(`Worker ${ws.workerId} disconnected. Re-queuing task ${workerData.assignedTask.taskId}.`);
+                    logTaskEvent(workerData.assignedTask.taskId, ws.workerId, 'Disconnected_Requeued');
+                    taskQueue.unshift(workerData.assignedTask);
+                    // What: Saves the state due to the modified task queue.
+                    saveState();
+                }
+                // What: Deletes the worker from the 'workers' Map, removing it from the pool of available workers.
+                workers.delete(ws.workerId);
+                // What: Sends a message to the director to remove the worker from the UI.
+                if (directorSocket) directorSocket.send(JSON.stringify({ type: 'workerRemoved', workerId: ws.workerId }));
+                // What: After a worker disconnects, we should check if its re-queued task can be assigned to another waiting worker.
+                assignTaskToAvailableWorker();
+            }
+        }
+    });
+});
+
+// --- INITIALIZATION ---
+// What: This is the very first function call that kicks off the entire server's logic after all the functions and variables have been defined.
+// Why: It loads any existing state from the last run or initializes a fresh state if none exists.
+loadState();
+%>
