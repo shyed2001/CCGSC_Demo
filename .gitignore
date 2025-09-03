@@ -1,2 +1,4 @@
 *.agdai
 MAlonzo/**
+C_CPP_tests/primes.txt
+C_CPP_tests/output/primes.txt
